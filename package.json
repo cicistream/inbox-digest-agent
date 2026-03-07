@@ -1,0 +1,23 @@
+{
+  "name": "email-notion-agent",
+  "version": "1.0.0",
+  "description": "Agent: filter valid emails, summarize, and sync to Notion",
+  "type": "module",
+  "main": "src/index.mjs",
+  "scripts": {
+    "start": "node src/index.mjs",
+    "run": "node src/index.mjs",
+    "outlook:auth": "node src/outlook-auth.mjs"
+  },
+  "keywords": ["email", "notion", "agent", "summary"],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "@langchain/mcp-adapters": "^1.1.1",
+    "dotenv": "^16.4.5",
+    "googleapis": "^144.0.0",
+    "imapflow": "^1.0.158",
+    "mailparser": "^3.6.5",
+    "openai": "^4.73.0"
+  }
+}
