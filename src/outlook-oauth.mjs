@@ -64,14 +64,40 @@ export async function getRefreshTokenViaDeviceCode({ clientId }) {
   const wait = (ms) => new Promise((r) => setTimeout(r, ms));
   const pollMs = (interval || 5) * 1000;
 
+  /** 带重试的轮询请求：网络瞬时故障（TLS 断开等）时重试几次再抛错 */
+  async function pollTokenWithRetry(maxRetries = 3) {
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        const opts = {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: pollBody.toString(),
+        };
+        if (typeof AbortSignal?.timeout === 'function') opts.signal = AbortSignal.timeout(25_000);
+        const tokenRes = await fetch(TOKEN_URL, opts);
+        return await tokenRes.json();
+      } catch (e) {
+        const msg = (e?.cause?.message || e?.message || '').toLowerCase();
+        const isNetwork =
+          e?.message === 'fetch failed' ||
+          msg.includes('tls') ||
+          msg.includes('socket') ||
+          msg.includes('econnreset') ||
+          msg.includes('econnrefused') ||
+          msg.includes('network');
+        if (isNetwork && attempt < maxRetries) {
+          console.warn(`轮询登录状态时网络异常，${2 * attempt}s 后重试 (${attempt}/${maxRetries})...`);
+          await wait(2000 * attempt);
+          continue;
+        }
+        throw e;
+      }
+    }
+  }
+
   for (;;) {
     await wait(pollMs);
-    const tokenRes = await fetch(TOKEN_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: pollBody.toString(),
-    });
-    const data = await tokenRes.json();
+    const data = await pollTokenWithRetry();
     if (data.access_token && data.refresh_token) {
       return { access_token: data.access_token, refresh_token: data.refresh_token };
     }

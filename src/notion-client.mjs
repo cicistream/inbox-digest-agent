@@ -1,8 +1,9 @@
 /**
- * 通过 Notion MCP 将总结文档追加到页面
- * 使用 @notionhq/notion-mcp-server（npx 启动），需配置 NOTION_TOKEN
+ * 将总结文档追加到 Notion 页面
+ * 优先用 Notion MCP；若 MCP 连接超时或失败则回退到直接 Notion API
  */
 import { MultiServerMCPClient } from '@langchain/mcp-adapters';
+import { Client as NotionClient } from '@notionhq/client';
 import dotenv from 'dotenv';
 
 dotenv.config();
@@ -77,40 +78,46 @@ export async function appendSummaryToNotion(summary) {
 
   const blockId = NOTION_PAGE_ID.replace(/-/g, '');
 
-  const mcpClient = new MultiServerMCPClient({
-    mcpServers: {
-      notion: {
-        command: 'npx',
-        args: ['-y', '@notionhq/notion-mcp-server'],
-        env: {
-          NOTION_TOKEN,
-        },
-      },
-    },
-  });
+  const appendViaApi = async () => {
+    const notion = new NotionClient({ auth: NOTION_TOKEN });
+    await notion.blocks.children.append({ block_id: blockId, children: blocks });
+  };
 
   try {
-    const tools = await mcpClient.getTools();
-    // 官方 Notion MCP 工具名：append-block-children（本地 npm 包）
-    const appendTool = tools.find(
-      (t) =>
-        t.name === 'append-block-children' ||
-        t.name === 'append_block_children' ||
-        (typeof t.name === 'string' && t.name.toLowerCase().includes('append') && t.name.toLowerCase().includes('block'))
-    );
-    if (!appendTool) {
-      console.warn('可用 MCP 工具:', tools.map((t) => t.name).join(', '));
-      throw new Error('Notion MCP 未提供 append-block-children 工具，请确认已安装 @notionhq/notion-mcp-server');
-    }
-    const result = await appendTool.invoke({
-      block_id: blockId,
-      children: blocks,
+    const mcpClient = new MultiServerMCPClient({
+      mcpServers: {
+        notion: {
+          command: 'npx',
+          args: ['-y', '@notionhq/notion-mcp-server'],
+          env: { NOTION_TOKEN },
+        },
+      },
     });
-    if (result && typeof result === 'object' && result.content) {
-      return result.content;
+    try {
+      const tools = await mcpClient.getTools();
+      const appendTool = tools.find(
+        (t) =>
+          t.name === 'append-block-children' ||
+          t.name === 'append_block_children' ||
+          (typeof t.name === 'string' && t.name.toLowerCase().includes('append') && t.name.toLowerCase().includes('block'))
+      );
+      if (appendTool) {
+        await appendTool.invoke({ block_id: blockId, children: blocks });
+        return;
+      }
+      console.warn('Notion MCP 未找到 append 工具，改用直接 API 写入…');
+      await appendViaApi();
+      return;
+    } finally {
+      await mcpClient.close();
     }
-    return result;
-  } finally {
-    await mcpClient.close();
+  } catch (mcpErr) {
+    const msg = mcpErr?.message || String(mcpErr);
+    if (/timed out|timeout|EPIPE|Failed to connect|MCP error|No append tool/i.test(msg)) {
+      console.warn('Notion MCP 不可用，改用直接 API 写入…');
+      await appendViaApi();
+      return;
+    }
+    throw mcpErr;
   }
 }

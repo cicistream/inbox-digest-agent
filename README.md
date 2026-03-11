@@ -57,6 +57,7 @@ flowchart TB
    - 重定向 URI 可不填（设备码流程不需要）
    - 注册完成后进入应用 → **概述**，复制 **应用程序(客户端) ID** → 写入 `.env` 的 `OUTLOOK_CLIENT_ID`
    - 进入 **API 权限** → 添加权限 → Microsoft Graph → 委托权限 → 勾选 **Mail.Read**、**offline_access** → 授予管理员同意（个人账户可跳过）
+   - 进入 **身份验证 (Authentication)** → **高级设置** → 将 **允许公共客户端流** 设为 **是** → 保存（设备码流程必须开启，否则会报 AADSTS70002）
 
    **若登录时报错 `This tenant has been blocked due to inactivity`（租户因长期未使用被禁用）：**
    - 用**无痕/隐私模式**打开设备码里的登录链接，并只用 **个人 Microsoft 账户**（如 xxx@outlook.com）登录，避免走到已停用的组织租户。
