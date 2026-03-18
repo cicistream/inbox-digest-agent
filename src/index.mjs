@@ -10,6 +10,10 @@ import { fetchEmailsFromOutlookGraph, isOutlookOAuthConfigured } from './outlook
 import { filterAndSummarize } from './summarizer.mjs';
 import { appendSummaryToNotion } from './notion-client.mjs';
 
+function formatDateYmd(d) {
+  return d.toISOString().slice(0, 10);
+}
+
 async function main() {
   console.log('开始拉取邮件…');
 
@@ -53,6 +57,16 @@ async function main() {
   console.log(`拉取到 ${emails.length} 封邮件，正在筛选并总结…`);
 
   const summary = await filterAndSummarize(emails);
+  // Toggle 标题按 env 的 EMAIL_DAYS 动态命名（与拉取区间一致）
+  const days = parseInt(process.env.EMAIL_DAYS || '7', 10);
+  const end = new Date();
+  const start = new Date(end);
+  start.setDate(start.getDate() - (Number.isFinite(days) ? days : 7));
+  summary.summaryTitle =
+    days <= 1
+      ? `邮件摘要 ${formatDateYmd(end)}`
+      : `邮件摘要 ${formatDateYmd(start)} ~ ${formatDateYmd(end)}`;
+
   console.log(`有效邮件数: ${summary.validCount}，标题: ${summary.summaryTitle}`);
 
   await appendSummaryToNotion(summary);

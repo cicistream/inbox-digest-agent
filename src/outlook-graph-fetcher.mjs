@@ -22,7 +22,7 @@ export function isOutlookOAuthConfigured() {
 }
 
 /**
- * @returns {Promise<Array<{ id, from, to, subject, date, bodyPlain, snippet }>>}
+ * @returns {Promise<Array<{ id, webLink?: string, from, to, subject, date, bodyPlain, snippet }>>}
  */
 export async function fetchEmailsFromOutlookGraph() {
   const clientId = (process.env.OUTLOOK_CLIENT_ID || '').trim();
@@ -43,7 +43,7 @@ export async function fetchEmailsFromOutlookGraph() {
   const sinceStr = since.toISOString();
   const filter = `receivedDateTime ge ${sinceStr}`;
 
-  const url = `${GRAPH_MESSAGES}?$top=100&$select=id,from,toRecipients,subject,receivedDateTime,bodyPreview,body&$filter=${encodeURIComponent(filter)}&$orderby=receivedDateTime desc`;
+  const url = `${GRAPH_MESSAGES}?$top=100&$select=id,webLink,from,toRecipients,subject,receivedDateTime,bodyPreview,body&$filter=${encodeURIComponent(filter)}&$orderby=receivedDateTime desc`;
   const res = await fetch(url, {
     headers: { Authorization: `Bearer ${accessToken}` },
   });
@@ -72,6 +72,7 @@ export async function fetchEmailsFromOutlookGraph() {
 
     results.push({
       id: msg.id,
+      webLink: msg.webLink,
       from,
       to,
       subject,

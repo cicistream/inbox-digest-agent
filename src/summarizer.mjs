@@ -18,12 +18,22 @@ const SYSTEM = `你是一个邮件助手。用户会给你一批邮件（每封�
 2. 对有效邮件写一份简洁的总结文档，便于直接放到 Notion：
    - 文档标题：例如「邮件摘要 YYYY-MM-DD」
    - 按邮件逐条：用简短标题（主题或概括）+ 2～4 句要点（谁发的、关键信息、是否需要行动）。
-输出严格为 JSON，不要包含其他文字或 markdown 代码块。格式：{ "validCount": number, "summaryTitle": "标题", "summarySections": [ { "title": "某封邮件标题", "bullets": ["要点1","要点2"] } ] }。
-要求：validCount 必须等于 summarySections 的长度；只要有一封以上有效邮件，summarySections 必须至少有一条，不能为空数组。`;
+输出严格为 JSON，不要包含其他文字或 markdown 代码块。格式：
+{
+  "validCount": number,
+  "summaryTitle": "标题",
+  "summarySections": [
+    { "sourceIndex": number, "title": "某封邮件标题", "bullets": ["要点1","要点2"] }
+  ]
+}
+要求：
+- validCount 必须等于 summarySections 的长度；
+- 只要有一封以上有效邮件，summarySections 必须至少有一条，不能为空数组；
+- sourceIndex 必须对应输入邮件的序号（从 1 开始），用于后续生成原邮件链接。`;
 
 /**
- * @param {Array<{ from, subject, date, bodyPlain, snippet }>} emails
- * @returns {Promise<{ validCount: number, summaryTitle: string, summarySections: Array<{ title: string, bullets: string[] }> }>}
+ * @param {Array<{ from, subject, date, bodyPlain, snippet, id?: string, webLink?: string }>} emails
+ * @returns {Promise<{ validCount: number, summaryTitle: string, summarySections: Array<{ sourceIndex?: number, title: string, bullets: string[], url?: string, from?: string, date?: string }> }>}
  */
 export async function filterAndSummarize(emails) {
   if (!emails?.length) {
@@ -59,17 +69,47 @@ export async function filterAndSummarize(emails) {
     const out = JSON.parse(jsonStr);
     const sections = Array.isArray(out.summarySections) ? out.summarySections : [];
     const validCount = typeof out.validCount === 'number' ? out.validCount : sections.length;
+    const normalizedSections = sections
+      .map((s) => ({
+        sourceIndex: typeof s?.sourceIndex === 'number' ? s.sourceIndex : undefined,
+        title: s?.title || '（无标题）',
+        bullets: Array.isArray(s?.bullets) ? s.bullets : [],
+      }))
+      .filter((s) => s.title || (s.bullets && s.bullets.length));
+
+    // 用 sourceIndex 映射原邮件链接（即使模型没返回也尽量补齐）
+    const enrichedSections = normalizedSections.map((s, idx) => {
+      const si =
+        typeof s.sourceIndex === 'number' &&
+          s.sourceIndex >= 1 &&
+          s.sourceIndex <= emails.length
+          ? s.sourceIndex
+          : undefined;
+      const mail = si ? emails[si - 1] : emails[idx];
+      return {
+        ...s,
+        sourceIndex: si ?? idx + 1,
+        url: mail?.webLink,
+        from: mail?.from,
+        date: mail?.date,
+      };
+    });
+
     const result = {
       validCount: sections.length > 0 ? sections.length : validCount,
       summaryTitle: out.summaryTitle || '邮件摘要',
-      summarySections: sections,
+      summarySections: enrichedSections,
     };
     // 模型返回了 0 条但输入有邮件：用原始邮件做兜底摘要，避免 Notion 为空
     if (result.summarySections.length === 0 && emails.length > 0) {
       const today = new Date().toISOString().slice(0, 10);
       result.summaryTitle = `邮件摘要 ${today}`;
       result.summarySections = emails.slice(0, 20).map((e) => ({
+        sourceIndex: undefined,
         title: e.subject || '（无主题）',
+        url: e.webLink,
+        from: e.from,
+        date: e.date,
         bullets: [
           `发件人：${e.from || '未知'}`,
           (e.bodyPlain || e.snippet || '').slice(0, 300) || '无正文摘要',
@@ -85,7 +125,11 @@ export async function filterAndSummarize(emails) {
       validCount: emails.length,
       summaryTitle: `邮件摘要 ${today}`,
       summarySections: emails.slice(0, 20).map((e) => ({
+        sourceIndex: undefined,
         title: e.subject || '（无主题）',
+        url: e.webLink,
+        from: e.from,
+        date: e.date,
         bullets: [`发件人：${e.from || '未知'}`, (e.bodyPlain || e.snippet || '').slice(0, 300) || '无正文'],
       })),
     };

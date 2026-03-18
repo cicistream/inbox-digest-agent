@@ -24,50 +24,92 @@ function chunkText(text, maxLen = 2000) {
   return out.length ? out : [''];
 }
 
+function sanitizeText(text) {
+  return String(text ?? '')
+    .replace(/^```(?:json)?\s*/i, '')
+    .replace(/\s*```$/i, '')
+    .replace(/\r\n/g, '\n')
+    .replace(/[ \t]+\n/g, '\n')
+    .trim();
+}
+
 /**
  * 把总结结果通过 MCP 追加到 Notion 页面
- * @param {{ summaryTitle: string, summarySections: Array<{ title: string, bullets: string[] }> }} summary
+ * @param {{ validCount?: number, summaryTitle: string, summarySections: Array<{ title: string, bullets: string[], url?: string, from?: string, date?: string }> }} summary
  */
 export async function appendSummaryToNotion(summary) {
   if (!NOTION_PAGE_ID || !NOTION_TOKEN) {
     throw new Error('Missing NOTION_PAGE_ID and NOTION_TOKEN (或 NOTION_API_KEY)');
   }
 
-  const blocks = [];
+  const dateTitle = sanitizeText(summary.summaryTitle || '邮件摘要');
+  const validCount =
+    typeof summary.validCount === 'number'
+      ? summary.validCount
+      : Array.isArray(summary.summarySections)
+        ? summary.summarySections.length
+        : 0;
 
-  // 标题
-  blocks.push({
-    object: 'block',
-    type: 'heading_2',
-    heading_2: {
-      rich_text: [{ type: 'text', text: { content: summary.summaryTitle || '邮件摘要' } }],
-    },
-  });
-
-  // 每段：小标题 + 要点
+  // Toggle 内的内容块
+  const children = [];
   for (const section of summary.summarySections || []) {
-    blocks.push({
+    const title = sanitizeText(section.title || '（无标题）');
+    const url = section.url;
+    const from = sanitizeText(section.from || '');
+    const date = sanitizeText(section.date || '');
+    const meta = [from && `From: ${from}`, date && `At: ${date}`].filter(Boolean).join('  ·  ');
+    children.push({
       object: 'block',
-      type: 'heading_3',
-      heading_3: {
-        rich_text: [{ type: 'text', text: { content: section.title || '（无标题）' } }],
+      type: 'paragraph',
+      paragraph: {
+        rich_text: url
+          ? [
+              {
+                type: 'text',
+                text: { content: title, link: { url } },
+                annotations: { color: 'blue', underline: true },
+              },
+              ...(meta
+                ? [
+                    {
+                      type: 'text',
+                      text: { content: `  —  ${meta}` },
+                      annotations: { color: 'gray' },
+                    },
+                  ]
+                : []),
+            ]
+          : [
+              { type: 'text', text: { content: title } },
+              ...(meta
+                ? [
+                    {
+                      type: 'text',
+                      text: { content: `  —  ${meta}` },
+                      annotations: { color: 'gray' },
+                    },
+                  ]
+                : []),
+            ],
       },
     });
+
     for (const bullet of section.bullets || []) {
-      for (const chunk of chunkText(bullet)) {
-        blocks.push({
-          object: 'block',
-          type: 'bulleted_list_item',
-          bulleted_list_item: {
-            rich_text: [{ type: 'text', text: { content: chunk } }],
-          },
-        });
-      }
+      const sanitizedBullet = sanitizeText(bullet);
+      const richText = chunkText(sanitizedBullet).map((chunk) => ({
+        type: 'text',
+        text: { content: chunk },
+      }));
+      children.push({
+        object: 'block',
+        type: 'bulleted_list_item',
+        bulleted_list_item: { rich_text: richText },
+      });
     }
   }
 
-  if (blocks.length <= 1) {
-    blocks.push({
+  if (children.length === 0) {
+    children.push({
       object: 'block',
       type: 'paragraph',
       paragraph: {
@@ -75,6 +117,22 @@ export async function appendSummaryToNotion(summary) {
       },
     });
   }
+
+  const blocks = [
+    {
+      object: 'block',
+      type: 'toggle',
+      toggle: {
+        rich_text: [
+          {
+            type: 'text',
+            text: { content: `${dateTitle}（有效 ${validCount}）` },
+          },
+        ],
+        children,
+      },
+    },
+  ];
 
   const blockId = NOTION_PAGE_ID.replace(/-/g, '');
 
