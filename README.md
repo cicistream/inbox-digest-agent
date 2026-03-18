@@ -2,9 +2,9 @@
 
 把“收件箱里的信息流”产品化：自动拉取最近 \(N\) 天邮件 → 本地规则筛掉明显噪音 → 用 LLM 生成可执行摘要 → 同步到 Notion，形成每日/每周可追踪的 Inbox Digest。
 
-如果你在做个人效率工具、知识管理产品，或想把“AI + 工程化落地”写进简历，这个项目更像一个可上线的 **agent 化小产品**，而不只是 demo。
+如果你在做个人效率工具、知识管理产品，或希望把“AI + 工程化落地”做成可长期使用的工具，这个项目更像一个可上线的 **agent 化小产品**，而不只是 demo。
 
-## 亮点（面向简历展示）
+## 亮点
 
 - **产品化的信息呈现**：Notion 内按“日期区间 Toggle（含有效邮件数）”组织；每封邮件标题可点击直达原文，并显示 **From/At** 元信息，方便直接回复处理。
 - **确定性与稳定性**：把“是否有效”的判定从 LLM 移到本地保守规则；LLM 只负责摘要，并用 `temperature: 0` 固定生成，避免同一输入导致有效数波动。
@@ -79,6 +79,29 @@ pnpm run start
 
 - 标题：`邮件摘要 YYYY-MM-DD ~ YYYY-MM-DD（有效 X）`（区间由 `EMAIL_DAYS` 决定）
 - 内容：每封邮件一行“蓝色可点击标题 + From/At”，下面跟随 bullets
+
+## Demo（示例输出）
+
+Notion 中的结构大致如下（示意）：
+
+```text
+▶ 邮件摘要 2026-03-11 ~ 2026-03-18（有效 7）
+  - [Blue Link] 项目评审会议时间调整  —  From: boss@company.com · At: 2026-03-18T06:10:00Z
+    • 会议改到周四 16:00，参会人不变
+    • 需要在会前补充 PRD 风险点
+  - [Blue Link] 账单与发票  —  From: billing@vendor.com · At: 2026-03-17T02:30:00Z
+    • 本月账单已生成，付款截止 3/25
+    • 如需开票请回复抬头信息
+```
+
+复现 demo 的最短路径：
+
+```bash
+pnpm install
+cp .env.example .env
+pnpm run outlook:auth   # 首次获取 OUTLOOK_REFRESH_TOKEN
+pnpm run start
+```
 
 ## Notion 配置
 
