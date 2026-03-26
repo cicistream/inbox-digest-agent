@@ -1,0 +1,3 @@
+{"id":"s1","from":"recruiter@acme.com","subject":"Interview schedule","body":"Please confirm your availability tomorrow.","expected_action_required":true}
+{"id":"s2","from":"newsletter@promo.com","subject":"Weekly promotion newsletter","body":"unsubscribe here","expected_action_required":false}
+

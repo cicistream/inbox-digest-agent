@@ -7,7 +7,16 @@
   "scripts": {
     "start": "node src/index.mjs",
     "run": "node src/index.mjs",
-    "outlook:auth": "node src/outlook-auth.mjs"
+    "digest:list": "node src/actions-cli.mjs list",
+    "digest:ack": "node src/actions-cli.mjs ack",
+    "digest:done": "node src/actions-cli.mjs done",
+    "digest:snooze": "node src/actions-cli.mjs snooze",
+    "retry:run": "node src/actions-cli.mjs retry:run",
+    "outlook:auth": "node src/outlook-auth.mjs",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "eval": "node scripts/eval.mjs",
+    "gate:quality": "pnpm test && pnpm eval"
   },
   "keywords": ["email", "notion", "agent", "summary"],
   "author": "",
@@ -15,10 +24,15 @@
   "dependencies": {
     "@langchain/mcp-adapters": "^1.1.1",
     "@notionhq/client": "^2.2.15",
+    "better-sqlite3": "^11.7.0",
     "dotenv": "^16.4.5",
     "googleapis": "^144.0.0",
     "imapflow": "^1.0.158",
     "mailparser": "^3.6.5",
+    "nodemailer": "^6.10.1",
     "openai": "^4.73.0"
+  },
+  "devDependencies": {
+    "vitest": "^3.2.4"
   }
 }

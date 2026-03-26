@@ -33,6 +33,14 @@ function sanitizeText(text) {
     .trim();
 }
 
+function chunkArray(items, size) {
+  const out = [];
+  for (let i = 0; i < items.length; i += size) {
+    out.push(items.slice(i, i + size));
+  }
+  return out;
+}
+
 /**
  * 把总结结果通过 MCP 追加到 Notion 页面
  * @param {{ validCount?: number, summaryTitle: string, summarySections: Array<{ title: string, bullets: string[], url?: string, from?: string, date?: string }> }} summary
@@ -50,49 +58,60 @@ export async function appendSummaryToNotion(summary) {
         ? summary.summarySections.length
         : 0;
 
-  // Toggle 内的内容块
+  // Toggle 内：分区用二级标题，邮件主题用三级标题，元数据单独一段，要点用列表
   const children = [];
   for (const section of summary.summarySections || []) {
     const title = sanitizeText(section.title || '（无标题）');
+    const kind = section.kind === 'bucket' ? 'bucket' : 'item';
+
+    if (kind === 'bucket') {
+      children.push({
+        object: 'block',
+        type: 'heading_2',
+        heading_2: {
+          rich_text: [{ type: 'text', text: { content: title } }],
+        },
+      });
+      continue;
+    }
+
     const url = section.url;
     const from = sanitizeText(section.from || '');
     const date = sanitizeText(section.date || '');
-    const meta = [from && `From: ${from}`, date && `At: ${date}`].filter(Boolean).join('  ·  ');
+
+    const titleRich =
+      url && /^https?:\/\//i.test(url)
+        ? [
+            {
+              type: 'text',
+              text: { content: title, link: { url } },
+              annotations: { color: 'blue', underline: true },
+            },
+          ]
+        : [{ type: 'text', text: { content: title } }];
+
     children.push({
       object: 'block',
-      type: 'paragraph',
-      paragraph: {
-        rich_text: url
-          ? [
-              {
-                type: 'text',
-                text: { content: title, link: { url } },
-                annotations: { color: 'blue', underline: true },
-              },
-              ...(meta
-                ? [
-                    {
-                      type: 'text',
-                      text: { content: `  —  ${meta}` },
-                      annotations: { color: 'gray' },
-                    },
-                  ]
-                : []),
-            ]
-          : [
-              { type: 'text', text: { content: title } },
-              ...(meta
-                ? [
-                    {
-                      type: 'text',
-                      text: { content: `  —  ${meta}` },
-                      annotations: { color: 'gray' },
-                    },
-                  ]
-                : []),
-            ],
-      },
+      type: 'heading_3',
+      heading_3: { rich_text: titleRich },
     });
+
+    if (from || date) {
+      const metaParts = [from && `发件人：${from}`, date && `时间：${date}`].filter(Boolean);
+      children.push({
+        object: 'block',
+        type: 'paragraph',
+        paragraph: {
+          rich_text: [
+            {
+              type: 'text',
+              text: { content: metaParts.join('　') },
+              annotations: { color: 'gray' },
+            },
+          ],
+        },
+      });
+    }
 
     for (const bullet of section.bullets || []) {
       const sanitizedBullet = sanitizeText(bullet);
@@ -118,21 +137,23 @@ export async function appendSummaryToNotion(summary) {
     });
   }
 
-  const blocks = [
-    {
+  const childChunks = chunkArray(children, 100);
+  const blocks = childChunks.map((chunk, idx) => {
+    const suffix = childChunks.length > 1 ? `（${idx + 1}/${childChunks.length}）` : '';
+    return {
       object: 'block',
       type: 'toggle',
       toggle: {
         rich_text: [
           {
             type: 'text',
-            text: { content: `${dateTitle}（有效 ${validCount}）` },
+            text: { content: `${dateTitle}（有效 ${validCount}）${suffix}` },
           },
         ],
-        children,
+        children: chunk,
       },
-    },
-  ];
+    };
+  });
 
   const blockId = NOTION_PAGE_ID.replace(/-/g, '');
 
