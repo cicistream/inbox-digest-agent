@@ -4,6 +4,7 @@
 
 node_modules
 .pnpm-store
+.data
+.codex
 
 .DS_Store
-

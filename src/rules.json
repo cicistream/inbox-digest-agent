@@ -1,0 +1,51 @@
+{
+  "highSignalKeywords": [
+    "interview",
+    "面试",
+    "offer",
+    "assessment",
+    "take-home",
+    "coding challenge",
+    "schedule",
+    "availability",
+    "deadline",
+    "follow up",
+    "follow-up",
+    "next step",
+    "下一步",
+    "请回复",
+    "回复",
+    "confirm"
+  ],
+  "mediumSignalKeywords": [
+    "recruiter",
+    "hiring manager",
+    "application",
+    "申请",
+    "职位",
+    "job",
+    "role",
+    "opportunity"
+  ],
+  "negativeKeywords": [
+    "unsubscribe",
+    "退订",
+    "newsletter",
+    "promotion",
+    "advertisement",
+    "验证码",
+    "verification code",
+    "receipt"
+  ],
+  "dueSoonKeywords": [
+    "today",
+    "tomorrow",
+    "今晚",
+    "今天",
+    "明天",
+    "asap",
+    "urgent",
+    "尽快"
+  ]
+}
+

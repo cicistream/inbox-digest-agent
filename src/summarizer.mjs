@@ -1,9 +1,10 @@
 /**
- * 用 Qwen（DashScope 兼容接口）从邮件列表中筛选「有效邮件」并总结成文档结构
- * 与项目根目录 .env 一致：OPENAI_API_KEY、OPENAI_BASE_URL、MODEL_NAME
+ * Rule-first action digest with optional LLM fallback for mid-confidence cases.
  */
 import OpenAI from 'openai';
 import dotenv from 'dotenv';
+import { bandByScore, bucketByRule, evaluateEmailRule } from './rule-engine.mjs';
+import { normalizeActionCard, validateActionCard } from './action-schema.mjs';
 
 dotenv.config();
 
@@ -12,126 +13,190 @@ const openai = new OpenAI({
   baseURL: process.env.OPENAI_BASE_URL || 'https://dashscope.aliyuncs.com/compatible-mode/v1',
 });
 
-const SYSTEM = `你是一个邮件助手。用户会给你一批邮件（每封包含：发件人、主题、日期、正文摘要）。
-请完成两件事：
-1. 筛选「有效邮件」：只排除「明显」垃圾、纯营销、退订/取关类、系统自动通知。其余一律视为有效（包括工作邮件、个人邮件、订阅、通知等），不要过度过滤。
-2. 对有效邮件写一份简洁的总结文档，便于直接放到 Notion：
-   - 文档标题：例如「邮件摘要 YYYY-MM-DD」
-   - 按邮件逐条：用简短标题（主题或概括）+ 2～4 句要点（谁发的、关键信息、是否需要行动）。
-输出严格为 JSON，不要包含其他文字或 markdown 代码块。格式：
-{
-  "validCount": number,
-  "summaryTitle": "标题",
-  "summarySections": [
-    { "sourceIndex": number, "title": "某封邮件标题", "bullets": ["要点1","要点2"] }
-  ]
+function formatDateYmd(d) {
+  return d.toISOString().slice(0, 10);
 }
-要求：
-- validCount 必须等于 summarySections 的长度；
-- 只要有一封以上有效邮件，summarySections 必须至少有一条，不能为空数组；
-- sourceIndex 必须对应输入邮件的序号（从 1 开始），用于后续生成原邮件链接。`;
 
-/**
- * @param {Array<{ from, subject, date, bodyPlain, snippet, id?: string, webLink?: string }>} emails
- * @returns {Promise<{ validCount: number, summaryTitle: string, summarySections: Array<{ sourceIndex?: number, title: string, bullets: string[], url?: string, from?: string, date?: string }> }>}
- */
-export async function filterAndSummarize(emails) {
-  if (!emails?.length) {
-    return { validCount: 0, summaryTitle: '邮件摘要（无新邮件）', summarySections: [] };
-  }
+function toThreadKey(email) {
+  const id = (email?.id || '').trim();
+  if (id) return `id:${id}`;
+  const from = (email?.from || '').trim().toLowerCase();
+  const subject = (email?.subject || '').trim().toLowerCase();
+  return `fallback:${from}|${subject}`;
+}
 
-  const input = emails
-    .slice(0, 50)
-    .map(
-      (e, i) =>
-        `[${i + 1}] 发件人: ${e.from}\n主题: ${e.subject}\n日期: ${e.date}\n正文摘要: ${(e.bodyPlain || e.snippet || '').slice(0, 800)}`
-    )
-    .join('\n\n');
+async function llmClassify(email, rule) {
+  const prompt = `你是一个求职邮件分拣器。请输出 JSON：
+{
+  "action_required": boolean,
+  "bucket": "do_now|this_week|watch",
+  "priority": "high|medium|low",
+  "confidence": "high|medium|low",
+  "why_flagged": "一句话",
+  "summary": "一句话下一步"
+}
+输入邮件：
+发件人: ${email.from}
+主题: ${email.subject}
+日期: ${email.date}
+正文摘要: ${(email.bodyPlain || email.snippet || '').slice(0, 1200)}
+当前规则证据: ${rule.evidence.join('; ')}`;
 
   const completion = await openai.chat.completions.create({
     model: process.env.MODEL_NAME || 'qwen-turbo',
     messages: [
-      { role: 'system', content: SYSTEM },
-      { role: 'user', content: `请处理以下邮件并输出 JSON：\n\n${input}` },
+      { role: 'system', content: '只输出 JSON，不要 markdown。' },
+      { role: 'user', content: prompt },
     ],
     response_format: { type: 'json_object' },
+    temperature: 0,
   });
 
-  const raw = completion.choices[0]?.message?.content?.trim();
-  if (!raw) {
-    return { validCount: 0, summaryTitle: '邮件摘要', summarySections: [] };
+  const raw = completion.choices[0]?.message?.content?.trim() || '{}';
+  const jsonStr = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
+  return JSON.parse(jsonStr);
+}
+
+function bucketLabel(bucket) {
+  if (bucket === 'do_now') return '立即处理';
+  if (bucket === 'this_week') return '本周跟进';
+  return '持续关注';
+}
+
+function priorityLabel(p) {
+  if (p === 'high') return '高';
+  if (p === 'medium') return '中';
+  if (p === 'low') return '低';
+  return String(p || '—');
+}
+
+function confidenceLabel(c) {
+  if (c === 'high') return '高';
+  if (c === 'medium') return '中';
+  if (c === 'low') return '低';
+  return String(c || '—');
+}
+
+function buildNotionSections(cards) {
+  const order = ['do_now', 'this_week', 'watch'];
+  const out = [];
+  for (const b of order) {
+    const items = cards.filter((x) => x.bucket === b);
+    if (!items.length) continue;
+    out.push({
+      sourceIndex: undefined,
+      kind: 'bucket',
+      title: `${bucketLabel(b)}（${items.length} 封）`,
+    });
+    for (const item of items) {
+      const dueLine = item.due_by ? `截止：${item.due_by}` : '截止：未在邮件中标明';
+      const evidence = (item.evidence || []).filter(Boolean).join('；');
+      out.push({
+        sourceIndex: undefined,
+        kind: 'item',
+        title: item.title,
+        bullets: [
+          item.summary ? `下一步：${item.summary}` : '下一步：请打开原邮件确认具体动作',
+          item.action_required ? '状态：需要处理' : '状态：仅观察',
+          dueLine,
+          `优先级：${priorityLabel(item.priority)}`,
+          `置信度：${confidenceLabel(item.confidence)}`,
+          evidence ? `依据：${evidence}` : '依据：（规则/模型未给出额外说明）',
+        ],
+        url: item.url,
+        from: item.from,
+        date: item.date,
+      });
+    }
+  }
+  return out;
+}
+
+export async function buildActionDigest(emails) {
+  if (!emails?.length) {
+    return {
+      validCount: 0,
+      summaryTitle: '邮件摘要（无新邮件）',
+      summarySections: [],
+      actionCards: [],
+    };
   }
 
-  // 若模型返回被 ``` 包裹的 JSON，先剥掉
-  const jsonStr = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
+  const cards = [];
+  for (const email of emails.slice(0, 100)) {
+    const rule = evaluateEmailRule(email);
+    const band = bandByScore(rule.score);
+    let bucket = bucketByRule(rule);
+    let source = 'rule';
+    let confidence = band === 'high' ? 'high' : band === 'low' ? 'medium' : 'low';
+    let summary = '';
+    let actionRequired = bucket !== 'watch';
+    let extraEvidence = [];
+    let priority = bucket === 'do_now' ? 'high' : bucket === 'this_week' ? 'medium' : 'low';
 
-  try {
-    const out = JSON.parse(jsonStr);
-    const sections = Array.isArray(out.summarySections) ? out.summarySections : [];
-    const validCount = typeof out.validCount === 'number' ? out.validCount : sections.length;
-    const normalizedSections = sections
-      .map((s) => ({
-        sourceIndex: typeof s?.sourceIndex === 'number' ? s.sourceIndex : undefined,
-        title: s?.title || '（无标题）',
-        bullets: Array.isArray(s?.bullets) ? s.bullets : [],
-      }))
-      .filter((s) => s.title || (s.bullets && s.bullets.length));
+    if (band === 'mid' && process.env.OPENAI_API_KEY) {
+      try {
+        const llm = await llmClassify(email, rule);
+        if (['do_now', 'this_week', 'watch'].includes(llm.bucket)) bucket = llm.bucket;
+        if (['high', 'medium', 'low'].includes(llm.priority)) priority = llm.priority;
+        if (['high', 'medium', 'low'].includes(llm.confidence)) confidence = llm.confidence;
+        summary = typeof llm.summary === 'string' ? llm.summary : '';
+        actionRequired = Boolean(llm.action_required);
+        source = 'llm';
+        if (llm.why_flagged) extraEvidence.push(String(llm.why_flagged));
+      } catch {
+        extraEvidence.push('llm fallback failed, kept rule decision');
+      }
+    }
 
-    // 用 sourceIndex 映射原邮件链接（即使模型没返回也尽量补齐）
-    const enrichedSections = normalizedSections.map((s, idx) => {
-      const si =
-        typeof s.sourceIndex === 'number' &&
-          s.sourceIndex >= 1 &&
-          s.sourceIndex <= emails.length
-          ? s.sourceIndex
-          : undefined;
-      const mail = si ? emails[si - 1] : emails[idx];
-      return {
-        ...s,
-        sourceIndex: si ?? idx + 1,
-        url: mail?.webLink,
-        from: mail?.from,
-        date: mail?.date,
-      };
+    const candidate = normalizeActionCard({
+      thread_key: toThreadKey(email),
+      message_id: email.id || '',
+      company: rule.company,
+      role: '',
+      action_required: actionRequired,
+      due_by: rule.dueBy,
+      priority,
+      bucket,
+      evidence: [...rule.evidence, ...extraEvidence],
+      source,
+      confidence,
+      state: 'new',
+      title: email.subject || '（无主题）',
+      summary,
+      url: email.webLink || '',
+      from: email.from || '',
+      date: email.date || '',
     });
 
-    const result = {
-      validCount: sections.length > 0 ? sections.length : validCount,
-      summaryTitle: out.summaryTitle || '邮件摘要',
-      summarySections: enrichedSections,
-    };
-    // 模型返回了 0 条但输入有邮件：用原始邮件做兜底摘要，避免 Notion 为空
-    if (result.summarySections.length === 0 && emails.length > 0) {
-      const today = new Date().toISOString().slice(0, 10);
-      result.summaryTitle = `邮件摘要 ${today}`;
-      result.summarySections = emails.slice(0, 20).map((e) => ({
-        sourceIndex: undefined,
-        title: e.subject || '（无主题）',
-        url: e.webLink,
-        from: e.from,
-        date: e.date,
-        bullets: [
-          `发件人：${e.from || '未知'}`,
-          (e.bodyPlain || e.snippet || '').slice(0, 300) || '无正文摘要',
-        ],
-      }));
-      result.validCount = result.summarySections.length;
+    const check = validateActionCard(candidate);
+    if (!check.ok) {
+      continue;
     }
-    return result;
-  } catch (e) {
-    console.warn('总结 JSON 解析失败，使用兜底摘要。原始返回前 200 字:', raw.slice(0, 200));
-    const today = new Date().toISOString().slice(0, 10);
-    return {
-      validCount: emails.length,
-      summaryTitle: `邮件摘要 ${today}`,
-      summarySections: emails.slice(0, 20).map((e) => ({
-        sourceIndex: undefined,
-        title: e.subject || '（无主题）',
-        url: e.webLink,
-        from: e.from,
-        date: e.date,
-        bullets: [`发件人：${e.from || '未知'}`, (e.bodyPlain || e.snippet || '').slice(0, 300) || '无正文'],
-      })),
-    };
+    cards.push(check.card);
   }
+
+  const end = new Date();
+  const days = parseInt(process.env.EMAIL_DAYS || '7', 10);
+  const start = new Date(end);
+  start.setDate(start.getDate() - (Number.isFinite(days) ? days : 7));
+  const title =
+    days <= 1
+      ? `邮件摘要 ${formatDateYmd(end)}`
+      : `邮件摘要 ${formatDateYmd(start)} ~ ${formatDateYmd(end)}`;
+
+  return {
+    validCount: cards.length,
+    summaryTitle: title,
+    summarySections: buildNotionSections(cards),
+    actionCards: cards,
+  };
 }
+
+/**
+ * Backward-compatible entry.
+ */
+export async function filterAndSummarize(emails) {
+  return buildActionDigest(emails);
+}
+

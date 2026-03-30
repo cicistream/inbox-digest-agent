@@ -19,7 +19,11 @@ jobs:
           node-version: 20
           cache: pnpm
       - run: pnpm install --frozen-lockfile=false
+      - run: pnpm run gate:quality
       - run: node -c src/index.mjs
       - run: node -c src/summarizer.mjs
       - run: node -c src/notion-client.mjs
-
+      - run: node -c src/notifier.mjs
+      - run: node -c src/state-db.mjs
+      - run: node -c src/actions-cli.mjs
+      - run: node -c src/digest-idempotency.mjs

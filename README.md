@@ -118,6 +118,32 @@ pnpm run start
 | `EMAIL_DAYS` | `7` | 拉取最近 N 天；同时用于 Notion Toggle 日期区间命名 |
 | `EMAIL_ALLOW_SENDERS` | 空 | 发件人白名单（逗号分隔），用于收敛输入规模 |
 | `MODEL_NAME` | `qwen-turbo` | OpenAI Compatible 的模型名 |
+| `REMINDER_CHANNELS` | `console` | 升级提醒通道（`console,telegram,email` 逗号分隔） |
+| `EVAL_FN_MAX` | `0.08` | 评估门禁允许的最大 FN 比例 |
+
+## 提醒通道
+
+- `console`：默认通道，写到日志（用于本地调试）
+- `telegram`：需要 `TELEGRAM_BOT_TOKEN`、`TELEGRAM_CHAT_ID`
+- `email`：需要 `SMTP_HOST`、`SMTP_PORT`、`SMTP_USER`、`SMTP_PASS`、`REMINDER_EMAIL_TO`
+
+通道可并行启用，例如：
+
+```bash
+REMINDER_CHANNELS=telegram,email
+```
+
+## 质量门禁（测试 + Eval）
+
+```bash
+pnpm run gate:quality
+```
+
+该命令会执行：
+- `pnpm test`（单元测试）
+- `pnpm eval`（在 `eval/samples.jsonl` 上计算 FN/FP/precision/recall）
+
+当 `fn_rate > EVAL_FN_MAX` 时，`pnpm eval` 会返回非 0，阻断 CI。
 
 ## 代码结构
 
