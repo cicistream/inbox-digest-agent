@@ -1,17 +1,17 @@
 # Email → Notion Agent（Outlook/Gmail）
 
-把“收件箱里的信息流”产品化：自动拉取最近 \(N\) 天邮件 → 本地规则筛掉明显噪音 → 用 LLM 生成可执行摘要 → 同步到 Notion，形成每日/每周可追踪的 Inbox Digest。
+把“收件箱里的信息流”产品化：自动拉取最近 \(N\) 天邮件 → 本地规则筛掉明显噪音 → 用 LLM 生成摘要 → 同步到 Notion 交互面板，形成可维护的 Inbox Digest。
 
 如果你在做个人效率工具、知识管理产品，或希望把“AI + 工程化落地”做成可长期使用的工具，这个项目更像一个可上线的 **agent 化小产品**，而不只是 demo。
 
 ## 亮点
 
-- **产品化的信息呈现**：Notion 内按“日期区间 Toggle（含有效邮件数）”组织；每封邮件标题可点击直达原文，并显示 **From/At** 元信息，方便直接回复处理。
+- **产品化的信息呈现**：优先写入 Notion 交互式面板，拆成 `Do Now / This Week / Watch` 三张 inline database；邮件标题本身直链原文，适合直接在 Notion 里筛选、改状态、做轻量整理。
 - **确定性与稳定性**：把“是否有效”的判定从 LLM 移到本地保守规则；LLM 只负责摘要，并用 `temperature: 0` 固定生成，避免同一输入导致有效数波动。
 - **多后端接入 & 降级策略**：
   - Outlook：OAuth2 Device Code Flow + Microsoft Graph（推荐）
   - IMAP：作为兜底（含端口/TLS/连接重试策略）
-  - Notion：优先官方 MCP，失败自动回退到 Notion API（避免 MCP 启动失败导致写入中断）
+  - Notion：优先交互式 database 面板；若 database 写入失败，自动回退到静态表格块，避免摘要中断
 - **工程化可维护**：模块化（fetcher / summarizer / notion writer），配置集中在 `.env`，支持白名单、时间窗口等可控参数。
 
 ## 功能概览
@@ -19,8 +19,14 @@
 - **Outlook（推荐）**：OAuth2 + Graph 拉取收件箱邮件，拿到 `webLink`，在 Notion 里直链原文
 - **Gmail（可选）**：Gmail API（OAuth2）或 IMAP
 - **本地规则过滤**：只排除“非常明确”的噪音（退订、明显促销、no-reply 验证码/系统通知、退信等）
-- **LLM 摘要（Qwen / OpenAI Compatible）**：对每封“已判定有效”的邮件生成 title + bullets
-- **Notion 写入**：追加一个 Toggle 块（区间标题 + 有效数），内部每封邮件一个可点击条目 + bullets
+- **LLM 摘要（Qwen / OpenAI Compatible）**：对规则层不确定的邮件做兜底分类，并生成简短摘要
+- **Notion 写入**：
+  - 优先：三张交互式 inline database（`Do Now / This Week / Watch`）
+  - 回退：单个 Toggle + 静态表格块
+- **用户意图记忆**：
+  - `This Week` 中被你手动改成 `LOW` 的邮件，后续会自动清理并 suppress
+  - `Watch` 中被你手动改成 `DONE` 的邮件，后续会自动清理并 suppress
+  - suppress 记录默认保留 `30` 天，之后自动过期
 
 ## 系统设计
 
@@ -30,8 +36,10 @@
 flowchart LR
   A[Email Sources\nOutlook Graph / IMAP / Gmail API] --> B[Fetch\nlast N days]
   B --> C[Local filter\nobvious noise only]
-  C --> D[LLM summarize\n(deterministic)]
-  D --> E[Write to Notion\nMCP → API fallback]
+  C --> D[Apply suppressions\nremember user intent]
+  D --> E[LLM summarize\n(deterministic)]
+  E --> F[Maintain Notion panels\narchive LOW/DONE rows]
+  F --> G[Write digest if changed\nDB → static table fallback]
 ```
 
 ### 为什么“有效邮件”不交给 LLM？
@@ -75,23 +83,30 @@ pnpm run outlook:auth
 pnpm run start
 ```
 
-运行后会在 Notion 页面末尾追加一个 Toggle：
+运行后会优先在 Notion 页面写入三张交互式面板：
 
-- 标题：`邮件摘要 YYYY-MM-DD ~ YYYY-MM-DD（有效 X）`（区间由 `EMAIL_DAYS` 决定）
-- 内容：每封邮件一行“蓝色可点击标题 + From/At”，下面跟随 bullets
+- `Do Now`
+- `This Week`
+- `Watch`
+
+其中：
+- `邮件` 列标题本身直链原邮件
+- `状态`、`优先级` 等字段可直接在 Notion 内交互
+- 若交互式 database 写入失败，会自动回退到静态表格块
 
 ## Demo（示例输出）
 
 Notion 中的结构大致如下（示意）：
 
 ```text
-▶ 邮件摘要 2026-03-11 ~ 2026-03-18（有效 7）
-  - [Blue Link] 项目评审会议时间调整  —  From: boss@company.com · At: 2026-03-18T06:10:00Z
-    • 会议改到周四 16:00，参会人不变
-    • 需要在会前补充 PRD 风险点
-  - [Blue Link] 账单与发票  —  From: billing@vendor.com · At: 2026-03-17T02:30:00Z
-    • 本月账单已生成，付款截止 3/25
-    • 如需开票请回复抬头信息
+Do Now
+  邮件 | 发件人 | 截止 | 优先级 | 状态 | 摘要 | 批次
+
+This Week
+  邮件 | 截止 | 优先级 | 状态 | 摘要 | 批次
+
+Watch
+  邮件 | 状态 | 批次
 ```
 
 复现 demo 的最短路径：
@@ -109,7 +124,7 @@ pnpm run start
 2. 在要写入的页面右上角「…」→ 连接到你的集成
 3. 从页面 URL 拿到 `NOTION_PAGE_ID`（32 位，可带 `-`）
 
-> 说明：运行时会尝试用 Notion MCP（`npx @notionhq/notion-mcp-server`）。若你本机 npm cache 权限异常导致 MCP 启动失败，程序会自动回退到 Notion API 直写，保证“摘要写入”不被阻断。
+> 说明：程序优先通过 Notion API 维护三张交互式 database 面板；如果数据库 schema 不兼容或 API 写入失败，会自动回退到静态表格块，保证摘要不中断。
 
 ## 配置项
 
@@ -120,6 +135,29 @@ pnpm run start
 | `MODEL_NAME` | `qwen-turbo` | OpenAI Compatible 的模型名 |
 | `REMINDER_CHANNELS` | `console` | 升级提醒通道（`console,telegram,email` 逗号分隔） |
 | `EVAL_FN_MAX` | `0.08` | 评估门禁允许的最大 FN 比例 |
+| `SUPPRESSION_RETENTION_DAYS` | `30` | 用户在 Notion 中手动清理出的 suppress 记录保留天数 |
+
+## Notion 面板行为
+
+程序会把 Notion 页面当作一个轻量行动面板，而不是永久日志页。
+
+- `Do Now`：按截止时间升序
+- `This Week`：按优先级，再按截止时间排序
+- `Watch`：极简观察面板，只保留 `邮件 / 状态 / 批次`
+
+每次运行前会先做面板维护：
+
+- `This Week` 中被你手动改成 `LOW` 的邮件会被归档
+- `Watch` 中被你手动改成 `DONE` 的邮件会被归档
+- 这些被你明确“降级/完成”的邮件会进入本地 suppression 表，后续默认不再重新进入表格
+- suppress 记录默认只保留 `30` 天，之后自动清理
+
+幂等规则也做了区分：
+
+- `Notion 清理` 每次都执行
+- `新增 digest 写入` 仅在摘要内容发生变化时执行
+
+所以你在 Notion 里的交互不会再被“命中幂等键”吞掉。
 
 ## 提醒通道
 
@@ -153,13 +191,14 @@ src/
   outlook-graph-fetcher.mjs   # Outlook Graph fetch + webLink
   outlook-oauth.mjs           # OAuth2 refresh + device code helper
   imap-fetcher.mjs            # IMAP fallback + retries
-  summarizer.mjs              # local filter + deterministic LLM summary
-  notion-client.mjs           # Notion toggle writer (MCP → API fallback)
+  summarizer.mjs              # local filter + deterministic LLM summary + suppress filtering
+  notion-client.mjs           # Notion interactive panel writer + cleanup + static fallback
+  state-db.mjs                # sqlite state, idempotency, suppressions
+  suppression-key.mjs         # stable key builder for user-intent suppression
 ```
 
 ## 可扩展方向（面向产品/工程演进）
 
-- **状态同步**：把“是否已处理/是否需要回复”写回 Notion database，形成闭环
 - **增量同步**：记录 lastSync watermark，避免重复写入
 - **可观测性**：结构化日志 + tracing，把每次 run 的输入规模/过滤原因/写入结果沉淀成指标
 - **前端展示**：做一个 Dashboard（Next.js + Notion 数据库）展示趋势与待办队列

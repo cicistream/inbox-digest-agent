@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  buildAutoArchiveFilter,
   buildBucketDatabasePayload,
   buildBucketPageProperties,
   buildNotionBlocks,
@@ -51,7 +52,7 @@ describe('notion-client', () => {
       '截止',
       '优先级',
       '置信度',
-      '下一步',
+      '摘要',
     ]);
 
     expect(rows[1].table_row.cells[0][0].text.content).toBe('Do Now');
@@ -75,11 +76,12 @@ describe('notion-client', () => {
       '截止',
       '优先级',
       '状态',
-      '下一步',
+      '摘要',
       '批次',
+      '抑制键',
     ]);
-    expect(Object.keys(thisWeek.properties)).toEqual(['邮件', '截止', '优先级', '状态', '下一步', '批次']);
-    expect(Object.keys(watch.properties)).toEqual(['邮件', '状态', '批次']);
+    expect(Object.keys(thisWeek.properties)).toEqual(['邮件', '截止', '优先级', '状态', '摘要', '批次', '抑制键']);
+    expect(Object.keys(watch.properties)).toEqual(['邮件', '状态', '批次', '抑制键']);
     expect(doNow.properties.优先级.select.options.map((x) => x.name)).toEqual(['HIGH', 'MEDIUM', 'LOW']);
   });
 
@@ -103,7 +105,9 @@ describe('notion-client', () => {
     expect(properties.邮件.title[0].text.link.url).toBe('https://example.com/mail/1');
     expect(properties.优先级.select.name).toBe('HIGH');
     expect(properties.状态.select.name).toBe('ACK');
+    expect(properties.摘要.rich_text[0].text.content).toBe('今天确认面试时间');
     expect(properties.批次.rich_text[0].text.content).toBe('邮件摘要 2026-03-26');
+    expect(properties.抑制键.rich_text[0].text.content).toBe('url:https://example.com/mail/1');
   });
 
   it('builds minimal watch panel properties', () => {
@@ -117,7 +121,19 @@ describe('notion-client', () => {
       '邮件摘要 2026-03-26'
     );
 
-    expect(Object.keys(properties)).toEqual(['邮件', '状态', '批次']);
+    expect(Object.keys(properties)).toEqual(['邮件', '状态', '批次', '抑制键']);
     expect(properties.状态.select.name).toBe('SNOOZED');
+  });
+
+  it('builds auto archive filters for interactive cleanup rules', () => {
+    expect(buildAutoArchiveFilter('do_now')).toBeNull();
+    expect(buildAutoArchiveFilter('this_week')).toEqual({
+      property: '优先级',
+      select: { equals: 'LOW' },
+    });
+    expect(buildAutoArchiveFilter('watch')).toEqual({
+      property: '状态',
+      select: { equals: 'DONE' },
+    });
   });
 });

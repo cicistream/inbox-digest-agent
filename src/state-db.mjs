@@ -7,6 +7,7 @@ const DB_DIR = process.env.AGENT_DB_DIR || '.data';
 const DB_FILE = process.env.AGENT_DB_FILE || 'agent-state.sqlite';
 const LOCK_NAME = process.env.AGENT_LOCK_NAME || 'digest-main';
 const STALE_LOCK_SECONDS = parseInt(process.env.AGENT_STALE_LOCK_SECONDS || '1800', 10);
+const SUPPRESSION_RETENTION_DAYS = parseInt(process.env.SUPPRESSION_RETENTION_DAYS || '30', 10);
 
 let db;
 
@@ -74,6 +75,12 @@ function ensureDb() {
     CREATE TABLE IF NOT EXISTS notion_writes (
       idempotency_key TEXT PRIMARY KEY,
       run_id TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS suppressions (
+      suppression_key TEXT PRIMARY KEY,
+      source_bucket TEXT NOT NULL,
+      reason TEXT NOT NULL,
       created_at TEXT NOT NULL
     );
   `);
@@ -183,6 +190,33 @@ export function recordNotionWrite(idempotencyKey, runId) {
   x.prepare(
     `INSERT OR IGNORE INTO notion_writes (idempotency_key, run_id, created_at) VALUES (?, ?, ?)`
   ).run(idempotencyKey, runId, nowIso());
+}
+
+export function upsertSuppression(suppressionKey, sourceBucket, reason) {
+  if (!suppressionKey) return;
+  const x = ensureDb();
+  x.prepare(
+    `INSERT INTO suppressions (suppression_key, source_bucket, reason, created_at)
+     VALUES (?, ?, ?, ?)
+     ON CONFLICT(suppression_key) DO UPDATE SET
+       source_bucket=excluded.source_bucket,
+       reason=excluded.reason,
+       created_at=excluded.created_at`
+  ).run(suppressionKey, sourceBucket, reason, nowIso());
+}
+
+export function listSuppressionKeys() {
+  const x = ensureDb();
+  const rows = x.prepare(`SELECT suppression_key FROM suppressions`).all();
+  return new Set(rows.map((row) => row.suppression_key).filter(Boolean));
+}
+
+export function pruneOldSuppressions(retentionDays = SUPPRESSION_RETENTION_DAYS) {
+  const x = ensureDb();
+  const days = Number.isFinite(retentionDays) ? retentionDays : SUPPRESSION_RETENTION_DAYS;
+  const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+  const result = x.prepare(`DELETE FROM suppressions WHERE created_at < ?`).run(cutoff);
+  return result.changes || 0;
 }
 
 export function enqueueReminder(runId, channel, payload, nextRetryAt = nowIso()) {

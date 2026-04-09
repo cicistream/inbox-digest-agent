@@ -8,14 +8,16 @@ import { fetchEmailsFromGmail, isGmailConfigured } from './email-fetcher.mjs';
 import { fetchEmailsFromImap, isImapConfigured } from './imap-fetcher.mjs';
 import { fetchEmailsFromOutlookGraph, isOutlookOAuthConfigured } from './outlook-graph-fetcher.mjs';
 import { buildActionDigest } from './summarizer.mjs';
-import { appendSummaryToNotion } from './notion-client.mjs';
+import { appendSummaryToNotion, maintainNotionPanels } from './notion-client.mjs';
 import { createDigestIdempotencyKey } from './digest-idempotency.mjs';
 import { enqueueEscalationReminders, processReminderQueue } from './notifier.mjs';
 import {
   acquireRunLock,
   finishRun,
   insertAction,
+  listSuppressionKeys,
   markNotionWriteIfNew,
+  pruneOldSuppressions,
   recordNotionWrite,
   releaseRunLock,
   startRun,
@@ -68,7 +70,13 @@ async function main() {
     }
     console.log(`拉取到 ${emails.length} 封邮件，正在筛选并总结…`);
 
-    const summary = await buildActionDigest(emails);
+    try {
+      await maintainNotionPanels();
+    } catch (err) {
+      console.warn(`Notion 面板清理失败，将在写入阶段回退到静态块：${err?.message || err}`);
+    }
+    pruneOldSuppressions();
+    const summary = await buildActionDigest(emails, { suppressedKeys: listSuppressionKeys() });
     // Toggle 标题按 env 的 EMAIL_DAYS 动态命名（与拉取区间一致）
     const days = parseInt(process.env.EMAIL_DAYS || '7', 10);
     const end = new Date();

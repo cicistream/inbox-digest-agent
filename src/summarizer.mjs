@@ -5,6 +5,7 @@ import OpenAI from 'openai';
 import dotenv from 'dotenv';
 import { bandByScore, bucketByRule, evaluateEmailRule } from './rule-engine.mjs';
 import { normalizeActionCard, validateActionCard } from './action-schema.mjs';
+import { buildSuppressionKeyFromActionCard } from './suppression-key.mjs';
 
 dotenv.config();
 
@@ -112,7 +113,8 @@ function buildNotionSections(cards) {
   return out;
 }
 
-export async function buildActionDigest(emails) {
+export async function buildActionDigest(emails, options = {}) {
+  const suppressedKeys = options?.suppressedKeys instanceof Set ? options.suppressedKeys : new Set();
   if (!emails?.length) {
     return {
       validCount: 0,
@@ -173,6 +175,10 @@ export async function buildActionDigest(emails) {
     if (!check.ok) {
       continue;
     }
+    const suppressionKey = buildSuppressionKeyFromActionCard(check.card);
+    if (suppressionKey && suppressedKeys.has(suppressionKey)) {
+      continue;
+    }
     cards.push(check.card);
   }
 
@@ -199,4 +205,3 @@ export async function buildActionDigest(emails) {
 export async function filterAndSummarize(emails) {
   return buildActionDigest(emails);
 }
-

@@ -1,11 +1,12 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 async function loadDbModule(tmpDir) {
   process.env.AGENT_DB_DIR = tmpDir;
   process.env.AGENT_DB_FILE = 'test.sqlite';
+  vi.resetModules();
   const m = await import('../src/state-db.mjs');
   return m;
 }
@@ -40,5 +41,23 @@ describe('state-db', () => {
     db.updateThreadState('id:1', 'ack', 'manual');
     const rows2 = db.listThreadQueue(10);
     expect(rows2[0].state).toBe('ack');
+  });
+
+  it('prunes suppressions older than retention window', async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-db-'));
+    const db = await loadDbModule(tmp);
+    db.upsertSuppression('old-key', 'watch', 'old');
+    db.upsertSuppression('fresh-key', 'watch', 'fresh');
+
+    const sqlite = (await import('better-sqlite3')).default;
+    const raw = new sqlite(path.join(tmp, 'test.sqlite'));
+    raw
+      .prepare(`UPDATE suppressions SET created_at = ? WHERE suppression_key = ?`)
+      .run(new Date(Date.now() - 31 * 24 * 60 * 60 * 1000).toISOString(), 'old-key');
+    raw.close();
+
+    const deleted = db.pruneOldSuppressions(30);
+    expect(deleted).toBe(1);
+    expect([...db.listSuppressionKeys()].sort()).toEqual(['fresh-key']);
   });
 });

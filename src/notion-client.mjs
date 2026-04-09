@@ -5,6 +5,8 @@
 import { MultiServerMCPClient } from '@langchain/mcp-adapters';
 import { Client as NotionClient } from '@notionhq/client';
 import dotenv from 'dotenv';
+import { upsertSuppression } from './state-db.mjs';
+import { buildSuppressionKeyFromActionCard, buildSuppressionKeyFromNotionPage } from './suppression-key.mjs';
 
 dotenv.config();
 
@@ -25,8 +27,8 @@ const SELECT_COLORS = {
   done: 'green',
   snoozed: 'gray',
 };
-const ALL_BUCKET_PROPERTIES = ['邮件', '发件人', '截止', '优先级', '状态', '下一步', '批次'];
-const LEGACY_REMOVABLE_PROPERTIES = ['原邮件', '线程', '摘要批次', '邮件时间', '置信度'];
+const ALL_BUCKET_PROPERTIES = ['邮件', '发件人', '截止', '优先级', '状态', '摘要', '批次'];
+const SUPPRESSION_KEY_PROPERTY = '抑制键';
 
 /**
  * Notion 单条 rich_text 有长度限制，按 2000 字符分段
@@ -86,12 +88,6 @@ function bucketLabel(bucket) {
   return sanitizeText(bucket || '—');
 }
 
-function actionLine(card) {
-  if (card.summary) return sanitizeText(card.summary);
-  if (card.action_required) return '请打开原邮件确认并处理下一步。';
-  return '继续观察，无需立即处理。';
-}
-
 function notionPageId() {
   return NOTION_PAGE_ID.replace(/-/g, '');
 }
@@ -116,6 +112,7 @@ export function buildBucketDatabasePayload(bucket) {
           邮件: { title: {} },
           状态: { select: { options: ['NEW', 'ACK', 'DONE', 'SNOOZED'].map(selectOption) } },
           批次: { rich_text: {} },
+          [SUPPRESSION_KEY_PROPERTY]: { rich_text: {} },
         }
       : bucket === 'this_week'
         ? {
@@ -123,8 +120,9 @@ export function buildBucketDatabasePayload(bucket) {
             截止: { date: {} },
             优先级: { select: { options: ['HIGH', 'MEDIUM', 'LOW'].map(selectOption) } },
             状态: { select: { options: ['NEW', 'ACK', 'DONE', 'SNOOZED'].map(selectOption) } },
-            下一步: { rich_text: {} },
+            摘要: { rich_text: {} },
             批次: { rich_text: {} },
+            [SUPPRESSION_KEY_PROPERTY]: { rich_text: {} },
           }
         : {
             邮件: { title: {} },
@@ -132,8 +130,9 @@ export function buildBucketDatabasePayload(bucket) {
             截止: { date: {} },
             优先级: { select: { options: ['HIGH', 'MEDIUM', 'LOW'].map(selectOption) } },
             状态: { select: { options: ['NEW', 'ACK', 'DONE', 'SNOOZED'].map(selectOption) } },
-            下一步: { rich_text: {} },
+            摘要: { rich_text: {} },
             批次: { rich_text: {} },
+            [SUPPRESSION_KEY_PROPERTY]: { rich_text: {} },
           };
   return {
     title: [
@@ -148,6 +147,7 @@ export function buildBucketDatabasePayload(bucket) {
 }
 
 export function buildBucketPageProperties(card, summaryTitle) {
+  const suppressionKey = buildSuppressionKeyFromActionCard(card);
   const base = {
     邮件: {
       title: [
@@ -164,6 +164,9 @@ export function buildBucketPageProperties(card, summaryTitle) {
     批次: {
       rich_text: [{ type: 'text', text: { content: truncateText(summaryTitle, 120) } }],
     },
+    [SUPPRESSION_KEY_PROPERTY]: {
+      rich_text: [{ type: 'text', text: { content: truncateText(suppressionKey, 500) } }],
+    },
   };
 
   if (card.bucket === 'watch') {
@@ -172,8 +175,8 @@ export function buildBucketPageProperties(card, summaryTitle) {
 
   base.截止 = card.due_by ? { date: { start: card.due_by } } : { date: null };
   base.优先级 = { select: { name: optionLabel(card.priority, 'LOW') } };
-  base.下一步 = {
-    rich_text: [{ type: 'text', text: { content: truncateText(actionLine(card), 500) } }],
+  base.摘要 = {
+    rich_text: [{ type: 'text', text: { content: truncateText(sanitizeText(card.summary || '—'), 320) } }],
   };
 
   if (card.bucket === 'do_now') {
@@ -195,6 +198,22 @@ function sortCardsForBucket(cards, bucket) {
   if (bucket === 'do_now') return [...cards].sort(byDueAsc);
   if (bucket === 'this_week') return [...cards].sort(byPriorityThenDue);
   return [...cards].sort(byNewestFirst);
+}
+
+export function buildAutoArchiveFilter(bucket) {
+  if (bucket === 'this_week') {
+    return {
+      property: '优先级',
+      select: { equals: 'LOW' },
+    };
+  }
+  if (bucket === 'watch') {
+    return {
+      property: '状态',
+      select: { equals: 'DONE' },
+    };
+  }
+  return null;
 }
 
 export function buildNotionBlocks(summary) {
@@ -252,7 +271,7 @@ export function buildNotionBlocks(summary) {
         asRichTextCell('截止'),
         asRichTextCell('优先级'),
         asRichTextCell('置信度'),
-        asRichTextCell('下一步'),
+        asRichTextCell('摘要'),
       ],
     },
   };
@@ -268,7 +287,7 @@ export function buildNotionBlocks(summary) {
         asRichTextCell(card.due_by || '未标明'),
         asRichTextCell(sanitizeText(card.priority || '—').toUpperCase()),
         asRichTextCell(sanitizeText(card.confidence || '—').toUpperCase()),
-        asRichTextCell(actionLine(card)),
+        asRichTextCell(sanitizeText(card.summary || '—')),
       ],
     },
   }));
@@ -334,7 +353,7 @@ async function listAllBlockChildren(notion, blockId) {
   return items;
 }
 
-async function ensureBucketDatabase(notion, pageId, bucket) {
+async function ensureBucketDatabase(notion, pageId, bucket, { createIfMissing = true } = {}) {
   const config = BUCKET_CONFIG[bucket];
   const children = await listAllBlockChildren(notion, pageId);
   const existing = children.find(
@@ -342,16 +361,17 @@ async function ensureBucketDatabase(notion, pageId, bucket) {
   );
   if (existing) {
     const payload = buildBucketDatabasePayload(bucket);
-    const propertiesPatch = Object.fromEntries(
-      [...ALL_BUCKET_PROPERTIES, ...LEGACY_REMOVABLE_PROPERTIES].map((name) => [name, payload.properties[name] || null])
-    );
     await notion.databases.update({
       database_id: existing.id,
       title: payload.title,
       is_inline: true,
-      properties: propertiesPatch,
+      properties: payload.properties,
     });
     return existing.id;
+  }
+
+  if (!createIfMissing) {
+    return null;
   }
 
   const payload = buildBucketDatabasePayload(bucket);
@@ -383,12 +403,52 @@ async function archiveDigestRows(notion, databaseId, summaryTitle) {
   } while (cursor);
 }
 
+async function archiveRowsByFilter(notion, databaseId, filter) {
+  if (!filter) return;
+  let cursor;
+  do {
+    const response = await notion.databases.query({
+      database_id: databaseId,
+      start_cursor: cursor,
+      page_size: 100,
+      filter,
+    });
+    for (const row of response.results) {
+      const suppressionKey = buildSuppressionKeyFromNotionPage(row);
+      if (suppressionKey) {
+        const isThisWeekLowPriority = filter?.property === '优先级';
+        const reason = isThisWeekLowPriority ? 'auto archived this_week LOW row' : 'user marked watch as DONE';
+        upsertSuppression(suppressionKey, isThisWeekLowPriority ? 'this_week' : 'watch', reason);
+      }
+      await notion.pages.update({ page_id: row.id, archived: true });
+    }
+    cursor = response.has_more ? response.next_cursor : undefined;
+  } while (cursor);
+}
+
+async function pruneInteractiveDatabases(notion, pageId) {
+  for (const bucket of BUCKET_ORDER) {
+    const databaseId = await ensureBucketDatabase(notion, pageId, bucket, { createIfMissing: false });
+    if (!databaseId) continue;
+    await archiveRowsByFilter(notion, databaseId, buildAutoArchiveFilter(bucket));
+  }
+}
+
+export async function maintainNotionPanels() {
+  if (!NOTION_PAGE_ID || !NOTION_TOKEN) {
+    throw new Error('Missing NOTION_PAGE_ID and NOTION_TOKEN (或 NOTION_API_KEY)');
+  }
+  const notion = new NotionClient({ auth: NOTION_TOKEN });
+  const pageId = notionPageId();
+  await pruneInteractiveDatabases(notion, pageId);
+}
+
 async function syncSummaryToDatabases(summary) {
   const cards = Array.isArray(summary.actionCards) ? summary.actionCards : [];
   if (!cards.length) return false;
-
   const notion = new NotionClient({ auth: NOTION_TOKEN });
   const pageId = notionPageId();
+  await pruneInteractiveDatabases(notion, pageId);
 
   for (const bucket of BUCKET_ORDER) {
     const databaseId = await ensureBucketDatabase(notion, pageId, bucket);
